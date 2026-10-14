@@ -45,49 +45,25 @@ jobs:
           from urllib.parse import urljoin
 
           page_url = "https://dxboys.bitfan.id/schedules/menu/184780"
-
-          headers = {
-              "User-Agent": "Mozilla/5.0"
-          }
+          headers = {"User-Agent": "Mozilla/5.0"}
 
           response = requests.get(
               page_url,
               headers=headers,
               timeout=30,
           )
-
           print("PAGE_STATUS:", response.status_code)
 
-          soup = BeautifulSoup(
-              response.text,
-              "html.parser",
-          )
-
+          soup = BeautifulSoup(response.text, "html.parser")
           calendar = soup.select_one("#js-schedule-calender")
 
           if calendar:
-              print(
-                  "CALENDAR_SUBDOMAIN:",
-                  calendar.get("data-subdomain"),
-              )
-              print(
-                  "CALENDAR_ELEMENT:",
-                  str(calendar)[:1000],
-              )
+              print("CALENDAR_SUBDOMAIN:", calendar.get("data-subdomain"))
           else:
               print("CALENDAR_ELEMENT_NOT_FOUND")
 
-          for item in soup.select('meta[name="jwt-token"]'):
-              print(
-                  "JWT_META_FOUND:",
-                  bool(item.get("content")),
-              )
-
-          for item in soup.select('[name="jwt-token"]'):
-              print(
-                  "JWT_INPUT_FOUND:",
-                  bool(item.get("value")),
-              )
+          jwt_meta = soup.select_one('meta[name="jwt-token"]')
+          print("JWT_META_FOUND:", jwt_meta is not None)
 
           scripts = [
               item.get("src")
@@ -95,53 +71,52 @@ jobs:
               if item.get("src")
           ]
 
+          found = False
+
           for script in scripts:
               if "schedule_calender-" not in script:
                   continue
 
-              script_url = urljoin(page_url, script)
+              if "runtime~app" in script:
+                  continue
 
-              print("SCRIPT_URL:", script_url)
+              script_url = urljoin(page_url, script)
+              print("\nSCRIPT_URL:", script_url)
 
               js_response = requests.get(
                   script_url,
                   headers=headers,
                   timeout=30,
               )
-
-              print(
-                  "SCRIPT_STATUS:",
-                  js_response.status_code,
-              )
+              print("SCRIPT_STATUS:", js_response.status_code)
+              print("SCRIPT_LENGTH:", len(js_response.text))
 
               js = js_response.text
 
-              for pattern in (
-                  r'baseURL\s*=\s*[^;]{1,300}',
-                  r'function\s+\w+\s*\([^)]*\)\s*\{[^}]{0,200}baseURL',
-                  r'get\s*\("/fanclubs/',
+              patterns = [
+                  r'baseURL',
+                  r'/fanclubs/',
                   r'jwt-token',
-                  r'js-schedule-calender',
-              ):
+                  r'withCredentials',
+                  r'Authorization',
+              ]
+
+              for pattern in patterns:
                   matches = list(
-                      re.finditer(
-                          pattern,
-                          js,
-                          re.IGNORECASE,
-                      )
+                      re.finditer(pattern, js, re.IGNORECASE)
                   )
+                  print("\nPATTERN:", pattern, "COUNT:", len(matches))
 
-                  for match in matches[:5]:
-                      start = max(0, match.start() - 250)
-                      end = min(len(js), match.end() + 400)
-
-                      print(
-                          "\nAPI_DETAIL:",
-                          pattern,
-                      )
+                  for match in matches[:4]:
+                      start = max(0, match.start() - 350)
+                      end = min(len(js), match.end() + 500)
                       print(js[start:end])
+                      print("---")
 
-              break
+              found = True
+
+          if not found:
+              print("MAIN_CALENDAR_SCRIPT_NOT_FOUND")
 
           print("\nDIAGNOSTIC_FINISHED")
           PY
