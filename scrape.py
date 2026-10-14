@@ -47,7 +47,7 @@ BOYS_CALENDAR = BOYS_BASE + "/vertical_calendar"
 DERA_BASE = "https://dxboys.bitfan.id"
 DERA_SCHEDULE = DERA_BASE + "/schedules/menu/184780"
 
-DERA_API_BASE = "https://dashboard-api.bitfan.id"
+DERA_API_BASE = "https://user-api.bitfan.id"
 DERA_API_PAGE = DERA_SCHEDULE
 
 MEMBERS = [
