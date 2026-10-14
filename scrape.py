@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch public BOYS AND MEN / でらボ schedule pages into data/events.json.
-
-Principles:
-- Never infer a year or event date from an article publication date.
-- Determine member from the event title/detail page, not a whole month of text.
-- Crawl BOYS AND MEN month pages individually.
-- Keep each source independent; one blocked source must not stop the others.
-"""
-from __future__ import annotations
+"""BOYS AND MEN / でらボ 公式予定取得プログラム"""
 
 import hashlib
 import json
@@ -22,212 +14,470 @@ from bs4 import BeautifulSoup
 
 JST = timezone(timedelta(hours=9))
 TODAY = datetime.now(JST).date()
-START = date(TODAY.year - 1, TODAY.month, min(TODAY.day, monthrange(TODAY.year - 1, TODAY.month)[1]))
-END = date(TODAY.year + 1, TODAY.month, min(TODAY.day, monthrange(TODAY.year + 1, TODAY.month)[1]))
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-    "Accept-Language": "ja,en-US;q=0.8,en;q=0.6",
-}
-TIMEOUT = 25
-MEMBERS = ["辻本達規", "田村侑久", "本田剛文", "平松賢人", "吉原雅斗"]
+
+START = date(
+    TODAY.year - 1,
+    TODAY.month,
+    min(TODAY.day, monthrange(TODAY.year - 1, TODAY.month)[1]),
+)
+END = date(
+    TODAY.year + 1,
+    TODAY.month,
+    min(TODAY.day, monthrange(TODAY.year + 1, TODAY.month)[1]),
+)
+
 BOYS_BASE = "https://boysandmen.jp"
 BOYS_CALENDAR = BOYS_BASE + "/vertical_calendar"
 DERA_BASE = "https://dxboys.bitfan.id"
 DERA_SCHEDULE = DERA_BASE + "/schedules/menu/184780"
-DERA_NEWS = DERA_BASE + "/contents/menu/184779"
-SKIP_TITLE = [
-    "パワープレイソングに決定", "レギュラー出演情報", "前月へ", "次月へ",
-    "Powered by", "ログイン", "Login", "SCHEDULE", "NEWS",
+
+MEMBERS = [
+    "辻本達規",
+    "田村侑久",
+    "本田剛文",
+    "平松賢人",
+    "吉原雅斗",
 ]
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
+    ),
+    "Accept-Language": "ja,en-US;q=0.8,en;q=0.6",
+}
 
 SESSION = requests.Session()
 SESSION.headers.update(HEADERS)
+TIMEOUT = 25
+
+# 予定ではない共通メニュー・案内ページ
+EXCLUDED_PATHS = (
+    "/about",
+    "/help",
+    "/contact",
+    "/faq",
+    "/privacy",
+    "/terms",
+    "/law",
+    "/sitemap",
+    "/login",
+    "/signup",
+    "/account",
+    "/cart",
+    "/mypage",
+    "/company",
+)
+
+# 予定ではないリンク名
+SKIP_TITLES = [
+    "F.ENT IDについて",
+    "お客さまへのお願い",
+    "お支払いについて",
+    "よくあるご質問",
+    "よくある質問",
+    "ボイメン☆ファミリーとは",
+    "特商法に基づく表示",
+    "お問い合わせ",
+    "お問合せ",
+    "会社概要",
+    "プライバシーポリシー",
+    "利用規約",
+    "サイトマップ",
+    "ログイン",
+    "ログアウト",
+    "会員登録",
+    "ファンクラブ",
+    "Powered by",
+    "前月へ",
+    "次月へ",
+    "パワープレイソングに決定",
+    "HOME",
+    "トップページ",
+    "SCHEDULE",
+    "NEWS",
+]
 
 
-def get_soup(url: str) -> BeautifulSoup:
-    response = SESSION.get(url, timeout=TIMEOUT)
-    response.raise_for_status()
-    response.encoding = response.apparent_encoding or response.encoding
-    return BeautifulSoup(response.text, "html.parser")
-
-
-def normalize(text: str) -> str:
+def normalize(text):
     return " ".join((text or "").replace("\xa0", " ").split())
 
 
-def parse_full_date(text: str):
-    """Parse only a full year/month/day date; do not use publication timestamps as event dates."""
+def get_soup(url):
+    response = SESSION.get(url, timeout=TIMEOUT)
+    response.raise_for_status()
+    response.encoding = (
+        response.apparent_encoding or response.encoding
+    )
+    return BeautifulSoup(response.text, "html.parser")
+
+
+def parse_full_date(text):
+    """年・月・日が明記された日付だけを認識する。"""
     text = normalize(text)
-    patterns = [
-        r"(20\d{2})\s*[年/.\-]\s*(\d{1,2})\s*[月/.\-]\s*(\d{1,2})\s*日?",
-        r"(20\d{2})年\s*(\d{1,2})月\s*(\d{1,2})日",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            try:
-                return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
-            except ValueError:
-                continue
-    return None
+
+    pattern = (
+        r"(20\d{2})\s*[年/.\-]\s*"
+        r"(\d{1,2})\s*[月/.\-]\s*"
+        r"(\d{1,2})\s*日?"
+    )
+
+    match = re.search(pattern, text)
+
+    if not match:
+        return None
+
+    try:
+        return date(
+            int(match.group(1)),
+            int(match.group(2)),
+            int(match.group(3)),
+        )
+    except ValueError:
+        return None
 
 
-def event_date_from_detail(soup: BeautifulSoup, title: str):
-    # Title first, then visible schedule content. Exclude metadata that usually holds publication date.
-    d = parse_full_date(title)
-    if d:
-        return d
-    for selector in ["main", "article", ".schedule", ".schedule-detail", ".contents", "body"]:
-        node = soup.select_one(selector)
-        if not node:
-            continue
-        clone_text = normalize(node.get_text(" ", strip=True))
-        # The first full date on a schedule detail page is generally the scheduled date.
-        # For NEWS pages this function is called only if title is date-bearing or the URL is /schedules/.
-        d = parse_full_date(clone_text)
-        if d:
-            return d
-    return None
-
-
-def member_for(title: str, detail_text: str = "") -> str:
-    """Use the title as the main evidence; don't let unrelated month-wide text choose a member."""
+def member_for(title, detail_text=""):
+    """タイトルを優先し、ページ全体からメンバーを誤判定しない。"""
     title = normalize(title)
-    title_matches = [member for member in MEMBERS if member in title]
-    if len(title_matches) == 1:
-        return title_matches[0]
-    if len(title_matches) > 1:
+
+    matches = [m for m in MEMBERS if m in title]
+
+    if len(matches) == 1:
+        return matches[0]
+
+    if len(matches) > 1:
         return "その他"
-    # Only use detail text when it's a single-event detail page, and only if exactly one member is named.
-    detail_matches = [member for member in MEMBERS if member in normalize(detail_text)]
-    if len(detail_matches) == 1:
-        return detail_matches[0]
-    return "グループ全体" if not title_matches else "その他"
+
+    # 個別イベントの詳細ページに限り、本文も確認する。
+    matches = [
+        m for m in MEMBERS
+        if m in normalize(detail_text)
+    ]
+
+    if len(matches) == 1:
+        return matches[0]
+
+    return "グループ全体"
 
 
-def classify(text: str) -> str:
+def classify(text):
     text = normalize(text)
-    if any(x in text for x in ["特典会", "お渡し会", "サイン会", "リミスタ"]):
+
+    if any(x in text for x in [
+        "特典会", "お渡し会", "サイン会", "リミスタ"
+    ]):
         return "特典会"
+
     if any(x in text for x in ["ラジオ", "RADIO", "FM "]):
         return "ラジオ"
-    if any(x in text for x in ["テレビ", "TV出演", "TBS", "東海テレビ", "NHK", "BS日テレ"]):
+
+    if any(x in text for x in [
+        "テレビ", "TV出演", "NHK", "東海テレビ", "TBS"
+    ]):
         return "テレビ"
+
     if any(x in text for x in ["舞台", "ミュージカル"]):
         return "舞台"
-    if any(x in text for x in ["ライブ", "コンサート", "単独公演"]):
+
+    if any(x in text for x in [
+        "ライブ", "コンサート", "単独公演"
+    ]):
         return "ライブ"
-    if any(x in text for x in ["配信", "NATS LIVE", "YouTube"]):
+
+    if any(x in text for x in ["配信", "YouTube"]):
         return "配信"
-    if any(x in text for x in ["リリース", "発売記念", "発売キャンペーン"]):
+
+    if any(x in text for x in ["リリース", "発売記念"]):
         return "リリース"
+
     return "イベント"
 
 
-def stable_id(source: str, d: date, title: str, url: str) -> str:
-    raw = f"{source}|{d.isoformat()}|{normalize(title)}|{url}"
-    return source + "-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-
-
-def make_event(source: str, d: date, title: str, url: str, detail_text: str = ""):
+def is_skipped_title(title):
     title = normalize(title)
-    if not title or len(title) < 4 or title.startswith("▼"):
+
+    if not title or len(title) < 4:
+        return True
+
+    if title.startswith("▼"):
+        return True
+
+    return any(
+        word.casefold() in title.casefold()
+        for word in SKIP_TITLES
+    )
+
+
+def is_excluded_boys_url(url):
+    parsed = urlparse(url)
+
+    if parsed.netloc.lower() not in {
+        "boysandmen.jp",
+        "www.boysandmen.jp",
+    }:
+        return True
+
+    path = parsed.path.rstrip("/") or "/"
+
+    # カレンダー自体へのリンクはイベントではない
+    if path == "/vertical_calendar":
+        return True
+
+    if path.startswith("/vertical_calendar/"):
+        return True
+
+    # サイト共通の案内・アカウントページを除外
+    for prefix in EXCLUDED_PATHS:
+        if path == prefix or path.startswith(prefix + "/"):
+            return True
+
+    return False
+
+
+def make_event(source, event_date, title, url, detail_text=""):
+    title = normalize(title)
+
+    if is_skipped_title(title):
         return None
-    if any(x.lower() in title.lower() for x in SKIP_TITLE):
+
+    if not START <= event_date <= END:
         return None
-    if not START <= d <= END:
+
+    if source == "boys" and is_excluded_boys_url(url):
         return None
-    if source == "boys" and "bitfan.id" in url:
-        return None
-    member = member_for(title, detail_text)
+
+    raw_id = (
+        f"{source}|{event_date.isoformat()}|{title}|{url}"
+    )
+    event_id = hashlib.sha256(
+        raw_id.encode("utf-8")
+    ).hexdigest()[:16]
+
     return {
-        "id": stable_id(source, d, title, url),
-        "date": d.isoformat(),
+        "id": f"{source}-{event_id}",
+        "date": event_date.isoformat(),
         "time": "",
         "title": title,
-        "member": member,
+        "member": member_for(title, detail_text),
         "type": classify(title),
         "place": "",
         "url": url,
-        "notes": "公式ページから自動取得。出演者・日時・会場はリンク先で確認してください。",
+        "notes": (
+            "公式ページから自動取得。"
+            "日時・出演者・会場はリンク先で確認してください。"
+        ),
         "source": source,
         "origin": "official",
         "unconfirmed": False,
     }
 
 
-def month_urls():
+def iter_month_urls():
+    """対象期間の月別カレンダーURLを作る。"""
     year, month = START.year, START.month
+
     while (year, month) <= (END.year, END.month):
         yield f"{BOYS_CALENDAR}/{year}/{month}"
+
         if month == 12:
-            year, month = year + 1, 1
+            year += 1
+            month = 1
         else:
             month += 1
 
 
+def get_day_container(anchor):
+    """
+    日付ごとのカレンダー領域を探す。
+    ページ全体やフッターから日付を拾わない。
+    """
+    node = anchor
+
+    for _ in range(7):
+        if node is None:
+            break
+
+        node_id = node.get("id", "")
+
+        match = re.search(
+            r"(?:collapse|schedule|day)[-_]?"
+            r"((?:20\d{2})\d{4})",
+            node_id,
+            re.IGNORECASE,
+        )
+
+        if match:
+            try:
+                event_date = datetime.strptime(
+                    match.group(1), "%Y%m%d"
+                ).date()
+
+                return node, event_date
+            except ValueError:
+                pass
+
+        node = node.parent
+
+    return None, None
+
+
 def nearest_day_heading(anchor):
-    """Find the nearest preceding explicit day heading in DOM order."""
-    for previous in anchor.find_all_previous(string=True):
-        text = normalize(str(previous))
-        if text.startswith("▼"):
-            d = parse_full_date(text)
-            if d:
-                return d
-        # Stop once we've crossed into an earlier daily block.
-        d = parse_full_date(text)
-        if d and re.search(r"\b20\d{2}\b", text) and len(text) < 35:
-            return d
+    """
+    リンクの直前にある、明示的な日付見出しだけを探す。
+    """
+    tags = anchor.find_all_previous(
+        ["h1", "h2", "h3", "h4", "strong", "b"],
+        limit=20,
+    )
+
+    for tag in tags:
+        text = normalize(tag.get_text(" ", strip=True))
+
+        if len(text) > 45:
+            continue
+
+        event_date = parse_full_date(text)
+
+        if event_date:
+            return event_date
+
     return None
 
 
-def scrape_boys_month(url: str):
+def scrape_boys_month(url):
     soup = get_soup(url)
     found = {}
-    for anchor in soup.select("a[href]"):
-        title = normalize(anchor.get_text(" ", strip=True))
-        href = urldefrag(urljoin(url, anchor.get("href", "")))[0]
-        if not title or len(title) < 5 or not href.startswith("https://"):
+
+    # まず日付ごとのパネルを探す
+    panels = []
+
+    for node in soup.find_all(id=True):
+        match = re.search(
+            r"(?:collapse|schedule|day)[-_]?"
+            r"((?:20\d{2})\d{4})",
+            node.get("id", ""),
+            re.IGNORECASE,
+        )
+
+        if not match:
             continue
-        if urlparse(href).netloc not in {"boysandmen.jp", "www.boysandmen.jp"}:
+
+        try:
+            event_date = datetime.strptime(
+                match.group(1), "%Y%m%d"
+            ).date()
+            panels.append((node, event_date))
+        except ValueError:
             continue
-        # The day heading itself is not an event link. Also skip month-navigation anchors.
-        if title.startswith("▼") or title in {"前月へ", "今月", "次月へ"}:
-            continue
-        if any(x in href.lower() for x in ["/login", "/privacy", "/terms"]):
-            continue
-        d = parse_full_date(title) or nearest_day_heading(anchor)
-        if not d:
-            continue
-        # Regular monthly campaign announcements are not daily events.
-        if "パワープレイソングに決定" in title:
-            continue
-        item = make_event("boys", d, title, href)
-        if item:
-            found[(item["date"], item["title"], item["url"])] = item
-    return list(found.values()), len(normalize(soup.get_text(" ", strip=True)))
+
+    if panels:
+        # パネル内のリンクだけを候補にする
+        for panel, event_date in panels:
+            for anchor in panel.select("a[href]"):
+                title = normalize(
+                    anchor.get_text(" ", strip=True)
+                )
+
+                event_url = urldefrag(
+                    urljoin(url, anchor.get("href", ""))
+                )[0]
+
+                if not title or is_skipped_title(title):
+                    continue
+
+                if not event_url.startswith("https://"):
+                    continue
+
+                if is_excluded_boys_url(event_url):
+                    continue
+
+                item = make_event(
+                    "boys", event_date, title, event_url
+                )
+
+                if item:
+                    key = (
+                        item["date"],
+                        item["title"],
+                        item["url"],
+                    )
+                    found[key] = item
+
+    else:
+        # 日付パネルを認識できない場合の安全側の処理。
+        # 親要素全体の文章から日付を推測しない。
+        for anchor in soup.select("a[href]"):
+            title = normalize(
+                anchor.get_text(" ", strip=True)
+            )
+
+            event_url = urldefrag(
+                urljoin(url, anchor.get("href", ""))
+            )[0]
+
+            if not title or is_skipped_title(title):
+                continue
+
+            if not event_url.startswith("https://"):
+                continue
+
+            if is_excluded_boys_url(event_url):
+                continue
+
+            event_date = parse_full_date(title)
+
+            if not event_date:
+                event_date = nearest_day_heading(anchor)
+
+            if not event_date:
+                continue
+
+            item = make_event(
+                "boys", event_date, title, event_url
+            )
+
+            if item:
+                key = (
+                    item["date"],
+                    item["title"],
+                    item["url"],
+                )
+                found[key] = item
+
+    return list(found.values())
 
 
 def scrape_boys():
-    events, ok_pages, errors = [], 0, []
-    urls = list(month_urls())
+    all_events = []
+    errors = []
+    pages_ok = 0
+    urls = list(iter_month_urls())
+
     for url in urls:
         try:
-            items, chars = scrape_boys_month(url)
-            events.extend(items)
-            ok_pages += 1
+            items = scrape_boys_month(url)
+            all_events.extend(items)
+            pages_ok += 1
+
         except Exception as exc:
             errors.append(f"{url}: {type(exc).__name__}: {exc}")
             print(f"WARN BOYS {url}: {exc}", file=sys.stderr)
-    # De-duplicate the same event linked from more than one monthly page.
+
     unique = {}
-    for item in events:
-        unique[(item["date"], item["title"].casefold(), item["url"])] = item
+
+    for item in all_events:
+        key = (
+            item["date"],
+            item["title"].casefold(),
+            item["url"],
+        )
+        unique[key] = item
+
     return list(unique.values()), {
-        "ok": ok_pages > 0,
+        "ok": pages_ok > 0,
         "count": len(unique),
-        "pages_ok": ok_pages,
+        "pages_ok": pages_ok,
         "pages_tried": len(urls),
         "errors": errors[:8],
         "url": BOYS_CALENDAR,
@@ -235,122 +485,225 @@ def scrape_boys():
 
 
 def collect_bitfan_links(soup, page_url):
-    results = []
-    for a in soup.select("a[href]"):
-        title = normalize(a.get_text(" ", strip=True))
-        href = urldefrag(urljoin(page_url, a.get("href", "")))[0]
-        if not title or len(title) < 5 or not href.startswith(DERA_BASE):
+    links = []
+
+    for anchor in soup.select("a[href]"):
+        title = normalize(anchor.get_text(" ", strip=True))
+
+        href = urldefrag(
+            urljoin(page_url, anchor.get("href", ""))
+        )[0]
+
+        if not title or len(title) < 4:
             continue
+
+        if not href.startswith(DERA_BASE):
+            continue
+
         path = urlparse(href).path
-        if not (path.startswith("/schedules/") or path.startswith("/contents/")):
+
+        # NEWS記事は開催日と掲載日を区別できないため除外
+        if not path.startswith("/schedules/"):
             continue
+
         if "/menu/" in path:
             continue
-        if any(x in title for x in ["Powered by", "一覧", "もっと見る"]):
+
+        if is_skipped_title(title):
             continue
-        results.append((title, href))
-    # Preserve first occurrence, but don't assume page/article publication date is event date.
-    return list(dict.fromkeys(results))
+
+        links.append((title, href))
+
+    return list(dict.fromkeys(links))
 
 
-def scrape_bitfan_index(url: str, source_key: str, page_limit: int = 3):
-    events, report_errors, visited = [], [], set()
-    # Try the provided index plus pagination pages. Page count is deliberately bounded.
-    index_urls = [url]
-    if "contents/menu" in url:
-        index_urls += [url + ("&" if "?" in url else "?") + f"page={page}" for page in range(2, page_limit + 1)]
-    links = []
-    pages_ok = 0
-    for index_url in index_urls:
-        try:
-            soup = get_soup(index_url)
-            pages_ok += 1
-            links.extend(collect_bitfan_links(soup, index_url))
-        except Exception as exc:
-            report_errors.append(f"{index_url}: {type(exc).__name__}: {exc}")
-            print(f"WARN Bitfan index {index_url}: {exc}", file=sys.stderr)
-    links = list(dict.fromkeys(links))
-    # Visit event detail pages. Date must be an actual schedule date, not the post timestamp.
-    for link_title, detail_url in links[:160]:
-        if detail_url in visited:
+def get_detail_date(soup, title):
+    # タイトルに開催日が明記されている場合
+    event_date = parse_full_date(title)
+
+    if event_date:
+        return event_date
+
+    # 個別スケジュールページの日時欄を優先
+    for selector in [
+        "time[datetime]",
+        ".schedule-date",
+        ".event-date",
+        ".date",
+    ]:
+        node = soup.select_one(selector)
+
+        if not node:
             continue
-        visited.add(detail_url)
-        is_schedule = "/schedules/" in urlparse(detail_url).path
+
+        if node.name == "time" and node.get("datetime"):
+            event_date = parse_full_date(node["datetime"])
+        else:
+            event_date = parse_full_date(
+                node.get_text(" ", strip=True)
+            )
+
+        if event_date:
+            return event_date
+
+    # ページ全体の日付は掲載日と混同するため使用しない
+    return None
+
+
+def scrape_derabo():
+    events = []
+    errors = []
+
+    try:
+        soup = get_soup(DERA_SCHEDULE)
+    except Exception as exc:
+        return [], {
+            "ok": False,
+            "count": 0,
+            "error": f"{type(exc).__name__}: {exc}",
+            "url": DERA_SCHEDULE,
+        }
+
+    links = collect_bitfan_links(soup, DERA_SCHEDULE)
+    checked = 0
+
+    for link_title, detail_url in links[:150]:
         try:
             detail = get_soup(detail_url)
-            h1 = detail.select_one("h1")
-            title = normalize(h1.get_text(" ", strip=True)) if h1 else link_title
-            if not title or title in {"SCHEDULE", "NEWS"}:
+            checked += 1
+
+            heading = detail.select_one("h1")
+            title = (
+                normalize(heading.get_text(" ", strip=True))
+                if heading
+                else link_title
+            )
+
+            if not title:
                 title = link_title
-            body = normalize(detail.get_text(" ", strip=True))
-            # A date-bearing title is safest. For schedule detail pages, parse visible schedule text.
-            d = parse_full_date(title)
-            if not d and is_schedule:
-                d = event_date_from_detail(detail, title)
-            # News detail pages without a full date in the event title are not assigned the post date.
-            if not d:
+
+            event_date = get_detail_date(detail, title)
+
+            # 日付を確定できない予定は登録しない
+            if not event_date:
                 continue
-            item = make_event("dera", d, title, detail_url, body)
+
+            body = normalize(detail.get_text(" ", strip=True))
+
+            item = make_event(
+                "dera", event_date, title, detail_url, body
+            )
+
             if item:
                 events.append(item)
+
         except Exception as exc:
-            report_errors.append(f"{detail_url}: {type(exc).__name__}: {exc}")
+            errors.append(
+                f"{detail_url}: {type(exc).__name__}: {exc}"
+            )
+
     unique = {}
+
     for item in events:
-        unique[(item["date"], item["title"].casefold(), item["url"])] = item
+        key = (
+            item["date"],
+            item["title"].casefold(),
+            item["url"],
+        )
+        unique[key] = item
+
     return list(unique.values()), {
-        "ok": pages_ok > 0,
+        "ok": True,
         "count": len(unique),
-        "index_pages_ok": pages_ok,
-        "detail_pages_found": len(links),
-        "detail_pages_checked": len(visited),
-        "errors": report_errors[:8],
-        "url": url,
+        "detail_links_found": len(links),
+        "detail_pages_checked": checked,
+        "errors": errors[:8],
+        "url": DERA_SCHEDULE,
     }
 
 
 def main():
-    all_events = []
+    events = []
     report = {}
 
-    boys_events, boys_report = scrape_boys()
-    all_events.extend(boys_events)
-    report["BOYS AND MEN公式"] = boys_report
+    boys_events, boys_status = scrape_boys()
+    events.extend(boys_events)
+    report["BOYS AND MEN公式"] = boys_status
 
-    for label, url in [
-        ("でらボ公式スケジュール", DERA_SCHEDULE),
-        ("でらボ公式NEWS", DERA_NEWS),
-    ]:
-        try:
-            items, stats = scrape_bitfan_index(url, "dera")
-            all_events.extend(items)
-            report[label] = stats
-        except Exception as exc:
-            report[label] = {"ok": False, "count": 0, "error": f"{type(exc).__name__}: {exc}", "url": url}
-            print(f"WARN {label}: {exc}", file=sys.stderr)
+    dera_events, dera_status = scrape_derabo()
+    events.extend(dera_events)
+    report["でらボ公式スケジュール"] = dera_status
+
+    # NEWS記事の掲載日を開催日として誤登録しない
+    report["でらボ公式NEWS"] = {
+        "ok": True,
+        "count": 0,
+        "note": (
+            "NEWS記事の掲載日とイベント開催日を"
+            "混同しないため、自動登録対象外です。"
+        ),
+        "url": DERA_BASE + "/",
+    }
 
     unique = {}
-    for item in all_events:
-        unique[(item["date"], item["title"].casefold(), item["url"])] = item
-    events = sorted(unique.values(), key=lambda x: (x["date"], x["time"], x["title"].casefold()))
 
-    output = {
-        "updated_at": datetime.now(JST).isoformat(timespec="seconds"),
-        "range": {"from": START.isoformat(), "to": END.isoformat()},
+    for item in events:
+        key = (
+            item["date"],
+            item["title"].casefold(),
+            item["url"],
+        )
+        unique[key] = item
+
+    sorted_events = sorted(
+        unique.values(),
+        key=lambda item: (
+            item["date"],
+            item["time"],
+            item["title"].casefold(),
+        ),
+    )
+
+    data = {
+        "updated_at": datetime.now(JST).isoformat(
+            timespec="seconds"
+        ),
+        "range": {
+            "from": START.isoformat(),
+            "to": END.isoformat(),
+        },
         "sources": report,
-        "events": events,
+        "events": sorted_events,
     }
-    import os
-    os.makedirs("data", exist_ok=True)
-    with open("data/events.json", "w", encoding="utf-8") as file:
-        json.dump(output, file, ensure_ascii=False, indent=2)
 
-    print(f"Wrote {len(events)} events")
-    for label, stats in report.items():
-        print(f"- {label}: ok={stats.get('ok')} count={stats.get('count')} "
-              f"pages={stats.get('pages_ok', stats.get('index_pages_ok', '-'))}")
-    if not any(stats.get("ok") for stats in report.values()):
-        sys.exit("All official sources failed; check network/site markup.")
+    import os
+
+    os.makedirs("data", exist_ok=True)
+
+    with open(
+        "data/events.json", "w", encoding="utf-8"
+    ) as output:
+        json.dump(
+            data,
+            output,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    print(f"Wrote {len(sorted_events)} events")
+
+    for name, status in report.items():
+        print(
+            f"- {name}: "
+            f"ok={status.get('ok')} "
+            f"count={status.get('count')}"
+        )
+
+    if not any(status.get("ok") for status in report.values()):
+        sys.exit(
+            "All official sources failed; "
+            "check network or site markup."
+        )
 
 
 if __name__ == "__main__":
