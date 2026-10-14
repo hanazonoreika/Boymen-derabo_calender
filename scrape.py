@@ -278,21 +278,25 @@ def collect_derabo_schedule_links(soup, page_url):
     return list(dict.fromkeys(links))
 
 def get_schedule_detail_date(soup, title):
-    # Only use dates that appear in the event title or an explicit schedule date field.
+    # タイトルに明示された日付を優先
     event_date = parse_full_date(title)
     if event_date:
         return event_date
-    for selector in ["time[datetime]", ".schedule-date", ".event-date", ".date"]:
-        node = soup.select_one(selector)
-        if not node:
-            continue
-        if node.name == "time" and node.get("datetime"):
-            event_date = parse_full_date(node["datetime"])
-        else:
-            event_date = parse_full_date(node.get_text(" ", strip=True))
-        if event_date:
-            return event_date
-    # Do not use a page-wide date: it may be a publication date.
+
+    # BitfanのSCHEDULE詳細欄に記載された日付を取得
+    text = soup.get_text("\n", strip=True)
+    lines = [normalize(line) for line in text.splitlines()]
+    lines = [line for line in lines if line]
+
+    for i, line in enumerate(lines):
+        if line.upper() == "SCHEDULE":
+            # SCHEDULE見出しの直後にある日付を確認
+            for candidate in lines[i + 1:i + 5]:
+                event_date = parse_full_date(candidate)
+                if event_date:
+                    return event_date
+
+    # 日付が確定できなければ誤登録を避けるため登録しない
     return None
 
 def scrape_derabo():
