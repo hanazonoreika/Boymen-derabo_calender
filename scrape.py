@@ -417,6 +417,7 @@ def main():
     print(f"Wrote {len(sorted_events)} events")
     for name, status in report.items():
         print(f"- {name}: ok={status.get('ok')} count={status.get('count')}")
+        print(json.dumps(report, ensure_ascii=False, indent=2))
     if not any(status.get("ok") for status in report.values()):
         sys.exit("All official sources failed; check network or site markup.")
 
