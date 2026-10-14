@@ -37,7 +37,7 @@ jobs:
       - name: Fetch official schedules
         run: python scrape.py
 
-    - name: Save updated event data
+      - name: Save updated event data
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
