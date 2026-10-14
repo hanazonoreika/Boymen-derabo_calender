@@ -68,6 +68,14 @@ EXCLUDED_PATHS = (
     "/mypage",
     "/company",
 )
+EXCLUDED_URLS = {
+    "https://boysandmen.jp/about/membership",
+    "https://boysandmen.jp/about/account",
+    "https://boysandmen.jp/about/law",
+    "https://boysandmen.jp/help",
+    "https://boysandmen.jp/about/payment",
+    "https://boysandmen.jp/about/customer_harassment",
+}
 
 # 予定ではないリンク名
 SKIP_TITLES = [
