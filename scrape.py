@@ -250,13 +250,13 @@ def make_event(source, event_date, title, url, detail_text=""):
         return None
 
     if not START <= event_date <= END:
-        return None
+            return None
 
         if source == "boys" and is_excluded_boys_url(url):
-        return None
+            return None
 
         if source == "boys" and url.rstrip("/") in EXCLUDED_URLS:
-        return None
+            return None
 
     raw_id = (
         f"{source}|{event_date.isoformat()}|{title}|{url}"
