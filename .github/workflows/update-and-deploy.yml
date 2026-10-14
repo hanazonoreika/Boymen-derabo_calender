@@ -36,7 +36,7 @@ jobs:
       - name: Fetch official schedules
         run: python scrape.py
 
-      - name: Diagnose Dera calendar API
+      - name: Diagnose official calendar API
         run: |
           python - <<'PY'
           import re
@@ -44,79 +44,64 @@ jobs:
           from bs4 import BeautifulSoup
           from urllib.parse import urljoin
 
-          page_url = "https://dxboys.bitfan.id/schedules/menu/184780"
+          page = "https://dxboys.bitfan.id/schedules/menu/184780"
           headers = {"User-Agent": "Mozilla/5.0"}
 
           response = requests.get(
-              page_url,
+              page,
               headers=headers,
               timeout=30,
           )
           print("PAGE_STATUS:", response.status_code)
 
           soup = BeautifulSoup(response.text, "html.parser")
+          token_tag = soup.select_one('meta[name="jwt-token"]')
+          token = token_tag.get("content", "") if token_tag else ""
+
           calendar = soup.select_one("#js-schedule-calender")
+          subdomain = calendar.get("data-subdomain", "") if calendar else ""
 
-          if calendar:
-              print("CALENDAR_SUBDOMAIN:", calendar.get("data-subdomain"))
-          else:
-              print("CALENDAR_ELEMENT_NOT_FOUND")
-
-          jwt_meta = soup.select_one('meta[name="jwt-token"]')
-          print("JWT_META_FOUND:", jwt_meta is not None)
+          print("SUBDOMAIN:", subdomain)
+          print("TOKEN_PRESENT:", bool(token))
 
           scripts = [
-              item.get("src")
+              urljoin(page, item.get("src", ""))
               for item in soup.select("script[src]")
-              if item.get("src")
+              if "schedule_calender-" in item.get("src", "")
           ]
 
-          found = False
+          main_script = next(
+              (
+                  url for url in scripts
+                  if "runtime~app" not in url
+              ),
+              None,
+          )
 
-          for script in scripts:
-              if "schedule_calender-" not in script:
-                  continue
+          if not main_script:
+              print("MAIN_SCRIPT_NOT_FOUND")
+              raise SystemExit(0)
 
-              if "runtime~app" in script:
-                  continue
+          js_response = requests.get(
+              main_script,
+              headers=headers,
+              timeout=30,
+          )
+          print("SCRIPT_STATUS:", js_response.status_code)
 
-              script_url = urljoin(page_url, script)
-              print("\nSCRIPT_URL:", script_url)
+          js = js_response.text
 
-              js_response = requests.get(
-                  script_url,
-                  headers=headers,
-                  timeout=30,
-              )
-              print("SCRIPT_STATUS:", js_response.status_code)
-              print("SCRIPT_LENGTH:", len(js_response.text))
-
-              js = js_response.text
-
-              patterns = [
-                  r'baseURL',
-                  r'/fanclubs/',
-                  r'jwt-token',
-                  r'withCredentials',
-                  r'Authorization',
-              ]
-
-              for pattern in patterns:
-                  matches = list(
-                      re.finditer(pattern, js, re.IGNORECASE)
-                  )
-                  print("\nPATTERN:", pattern, "COUNT:", len(matches))
-
-                  for match in matches[:4]:
-                      start = max(0, match.start() - 350)
-                      end = min(len(js), match.end() + 500)
-                      print(js[start:end])
-                      print("---")
-
-              found = True
-
-          if not found:
-              print("MAIN_CALENDAR_SCRIPT_NOT_FOUND")
+          for marker in [
+              "27:function",
+              'function r(){return',
+              'function o(){return',
+              "dashboard-api.bitfan",
+              'l.a.get("/fanclubs/',
+          ]:
+              pos = js.find(marker)
+              print("\nMARKER:", marker, "POSITION:", pos)
+              if pos >= 0:
+                  print(js[max(0, pos - 300):pos + 1800])
 
           print("\nDIAGNOSTIC_FINISHED")
           PY
