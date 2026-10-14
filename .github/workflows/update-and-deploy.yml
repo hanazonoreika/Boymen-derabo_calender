@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -41,69 +41,155 @@ jobs:
           python - <<'PY'
           import re
           import requests
-          from urllib.parse import urljoin
-
-          base = "https://dxboys.bitfan.id"
-          page = requests.get(
-              base + "/schedules/menu/184780",
-              headers={"User-Agent": "Mozilla/5.0"},
-              timeout=25,
-          )
-          page.raise_for_status()
-
           from bs4 import BeautifulSoup
-          soup = BeautifulSoup(page.text, "html.parser")
 
-          scripts = [
-              urljoin(base, s.get("src", ""))
-              for s in soup.select("script[src]")
-              if "schedule_calender" in s.get("src", "")
+          urls = [
+              "https://dxboys.bitfan.id/",
+              "https://dxboys.bitfan.id/schedules/menu/184780",
           ]
 
-          print("SCHEDULE_SCRIPTS:", scripts)
+          headers = {
+              "User-Agent": "Mozilla/5.0"
+          }
 
-          patterns = re.compile(
-              r"schedules|calendar|calender|api/|graphql|"
-              r"axios|fetch\(|\.json|pagination|per_page|page_size",
-              re.I,
-          )
+          for url in urls:
+              print("\n" + "=" * 70)
+              print("PAGE:", url)
 
-          for url in scripts:
-              print("\n===== SCRIPT:", url, "=====")
               try:
-                  r = requests.get(
+                  response = requests.get(
                       url,
-                      headers={"User-Agent": "Mozilla/5.0"},
-                      timeout=25,
+                      headers=headers,
+                      timeout=30,
                   )
-                  print("STATUS:", r.status_code)
-                  print("LENGTH:", len(r.text))
+                  print("STATUS:", response.status_code)
+                  print("HTML_LENGTH:", len(response.text))
 
-                  matches = list(patterns.finditer(r.text))
-                  print("MATCH_COUNT:", len(matches))
+                  soup = BeautifulSoup(
+                      response.text,
+                      "html.parser",
+                  )
 
-                  shown = set()
-                  for match in matches:
-                      start = max(0, match.start() - 100)
-                      end = min(len(r.text), match.end() + 180)
-                      snippet = r.text[start:end].replace("\n", " ")
+                  links = []
+                  for a in soup.select("a[href]"):
+                      href = a.get("href", "")
+                      if "schedules" in href.lower():
+                          links.append({
+                              "title": a.get_text(" ", strip=True),
+                              "href": href,
+                          })
 
-                      if snippet in shown:
+                  print("SCHEDULE_LINK_COUNT:", len(links))
+                  for item in links[:30]:
+                      print("LINK:", item)
+
+                  scripts = [
+                      s.get("src")
+                      for s in soup.select("script[src]")
+                  ]
+
+                  print("SCRIPT_COUNT:", len(scripts))
+
+                  for script_url in scripts:
+                      if not script_url:
                           continue
-                      shown.add(snippet)
-                      print("MATCH:", snippet[:300])
 
-                      if len(shown) >= 30:
-                          break
+                      if not any(
+                          word in script_url.lower()
+                          for word in (
+                              "schedule",
+                              "calendar",
+                              "app",
+                          )
+                      ):
+                          continue
+
+                      full_url = requests.compat.urljoin(
+                          url,
+                          script_url,
+                      )
+
+                      try:
+                          js_response = requests.get(
+                              full_url,
+                              headers=headers,
+                              timeout=30,
+                          )
+
+                          print("\nSCRIPT_URL:", full_url)
+                          print(
+                              "SCRIPT_STATUS:",
+                              js_response.status_code,
+                          )
+                          print(
+                              "SCRIPT_LENGTH:",
+                              len(js_response.text),
+                          )
+
+                          js = js_response.text
+
+                          patterns = [
+                              r"/api/",
+                              r"schedules",
+                              r"schedule",
+                              r"axios",
+                              r"fetch\s*\(",
+                              r"XMLHttpRequest",
+                              r"\.ajax\s*\(",
+                              r"\.json",
+                          ]
+
+                          seen = set()
+                          count = 0
+
+                          for pattern in patterns:
+                              for match in re.finditer(
+                                  pattern,
+                                  js,
+                                  re.IGNORECASE,
+                              ):
+                                  start = max(
+                                      0,
+                                      match.start() - 180,
+                                  )
+                                  end = min(
+                                      len(js),
+                                      match.end() + 300,
+                                  )
+
+                                  snippet = js[start:end]
+
+                                  if snippet in seen:
+                                      continue
+
+                                  seen.add(snippet)
+                                  print(
+                                      "\nJS_MATCH:",
+                                      pattern,
+                                  )
+                                  print(snippet[:500])
+
+                                  count += 1
+                                  if count >= 25:
+                                      break
+
+                              if count >= 25:
+                                  break
+
+                          print("JS_MATCH_COUNT:", count)
+
+                      except Exception as e:
+                          print("SCRIPT_ERROR:", repr(e))
 
               except Exception as e:
-                  print("ERROR:", type(e).__name__, str(e))
+                  print("PAGE_ERROR:", repr(e))
+
           PY
 
-      - name: Configure Pages
+      - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
-      - name: Upload site with fresh data
+      - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: .
@@ -117,6 +203,6 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      - name: Deploy
+      - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
