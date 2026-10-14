@@ -33,7 +33,40 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Fetch official schedules
-        run: python scrape.py
+        run: |
+          python scrape.py
+          python - <<'PY'
+          import requests
+          from bs4 import BeautifulSoup
+
+          urls = [
+              "https://dxboys.bitfan.id/",
+              "https://dxboys.bitfan.id/schedules/menu/184780",
+          ]
+
+          for url in urls:
+              print("\nCHECK:", url)
+              try:
+                  r = requests.get(
+                      url,
+                      headers={
+                          "User-Agent": "Mozilla/5.0"
+                      },
+                      timeout=25,
+                  )
+                  print("STATUS:", r.status_code)
+                  print("HTML_LENGTH:", len(r.text))
+                  soup = BeautifulSoup(r.text, "html.parser")
+                  links = [
+                      a.get("href", "")
+                      for a in soup.select("a[href]")
+                      if "/schedules/" in a.get("href", "")
+                  ]
+                  print("SCHEDULE_LINK_COUNT:", len(links))
+                  print("SAMPLE_LINKS:", links[:10])
+              except Exception as e:
+                  print("ERROR:", type(e).__name__, str(e))
+          PY
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
