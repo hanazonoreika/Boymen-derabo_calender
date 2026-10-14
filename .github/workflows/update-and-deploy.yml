@@ -20,6 +20,7 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,11 +34,14 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Fetch official schedules
+        run: python scrape.py
+
+      - name: Diagnose Dera schedule page
         run: |
-          python scrape.py
           python - <<'PY'
           import requests
           from bs4 import BeautifulSoup
+          from urllib.parse import urljoin, urlparse
 
           urls = [
               "https://dxboys.bitfan.id/",
@@ -45,25 +49,64 @@ jobs:
           ]
 
           for url in urls:
-              print("\nCHECK:", url)
+              print("\n===== CHECK:", url, "=====")
+
               try:
                   r = requests.get(
                       url,
                       headers={
-                          "User-Agent": "Mozilla/5.0"
+                          "User-Agent": "Mozilla/5.0",
+                          "Accept-Language": "ja,en-US;q=0.8,en;q=0.6",
                       },
                       timeout=25,
                   )
+
                   print("STATUS:", r.status_code)
+                  print("FINAL_URL:", r.url)
                   print("HTML_LENGTH:", len(r.text))
+
                   soup = BeautifulSoup(r.text, "html.parser")
-                  links = [
-                      a.get("href", "")
-                      for a in soup.select("a[href]")
-                      if "/schedules/" in a.get("href", "")
-                  ]
-                  print("SCHEDULE_LINK_COUNT:", len(links))
-                  print("SAMPLE_LINKS:", links[:10])
+
+                  links = []
+                  for a in soup.select("a[href]"):
+                      href = urljoin(url, a.get("href", ""))
+                      parsed = urlparse(href)
+
+                      if (
+                          parsed.netloc.lower() == "dxboys.bitfan.id"
+                          and parsed.path.startswith("/schedules/")
+                          and "/menu/" not in parsed.path
+                      ):
+                          title = a.get_text(" ", strip=True)
+                          links.append((title, href))
+
+                  unique_links = list(dict.fromkeys(links))
+
+                  print("DETAIL_LINK_COUNT:", len(unique_links))
+                  print("DETAIL_LINK_SAMPLES:")
+                  for title, href in unique_links[:30]:
+                      print(" ", repr(title), "=>", href)
+
+                  print("SCRIPT_URLS:")
+                  for s in soup.select("script[src]"):
+                      print(" ", urljoin(url, s.get("src", "")))
+
+                  print("PAGINATION_LINKS:")
+                  for a in soup.select("a[href]"):
+                      title = a.get_text(" ", strip=True)
+                      href = a.get("href", "")
+                      combined = (title + " " + href).lower()
+
+                      if any(x in combined for x in [
+                          "next", "page=", "pagination",
+                          "次へ", "次のページ", "もっと見る"
+                      ]):
+                          print(" ", repr(title), "=>", href)
+
+                  text = soup.get_text(" ", strip=True)
+                  print("HAS_SCHEDULE_WORD:", "SCHEDULE" in text.upper())
+                  print("HAS_MORE_WORD:", "もっと見る" in text)
+
               except Exception as e:
                   print("ERROR:", type(e).__name__, str(e))
           PY
@@ -79,9 +122,11 @@ jobs:
   deploy:
     needs: update
     runs-on: ubuntu-latest
+
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+
     steps:
       - name: Deploy
         id: deployment
