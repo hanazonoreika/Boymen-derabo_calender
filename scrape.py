@@ -243,6 +243,251 @@ def is_excluded_boys_url(url):
     return False
 
 
+/bin/env python3
+"""BOYS AND MEN / でらボ 公式予定取得プログラム"""
+
+import hashlib
+import json
+import re
+import sys
+from calendar import monthrange
+from datetime import date, datetime, timedelta, timezone
+from urllib.parse import urljoin, urldefrag, urlparse
+
+import requests
+from bs4 import BeautifulSoup
+
+JST = timezone(timedelta(hours=9))
+TODAY = datetime.now(JST).date()
+
+START = date(
+    TODAY.year - 1,
+    TODAY.month,
+    min(TODAY.day, monthrange(TODAY.year - 1, TODAY.month)[1]),
+)
+END = date(
+    TODAY.year + 1,
+    TODAY.month,
+    min(TODAY.day, monthrange(TODAY.year + 1, TODAY.month)[1]),
+)
+
+BOYS_BASE = "https://boysandmen.jp"
+BOYS_CALENDAR = BOYS_BASE + "/vertical_calendar"
+DERA_BASE = "https://dxboys.bitfan.id"
+DERA_SCHEDULE = DERA_BASE + "/schedules/menu/184780"
+
+MEMBERS = [
+    "辻本達規",
+    "田村侑久",
+    "本田剛文",
+    "平松賢人",
+    "吉原雅斗",
+]
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
+    ),
+    "Accept-Language": "ja,en-US;q=0.8,en;q=0.6",
+}
+
+SESSION = requests.Session()
+SESSION.headers.update(HEADERS)
+TIMEOUT = 25
+
+# 予定ではない共通メニュー・案内ページ
+EXCLUDED_PATHS = (
+    "/about",
+    "/help",
+    "/contact",
+    "/faq",
+    "/privacy",
+    "/terms",
+    "/law",
+    "/sitemap",
+    "/login",
+    "/signup",
+    "/account",
+    "/cart",
+    "/mypage",
+    "/company",
+)
+EXCLUDED_URLS = {
+    "https://boysandmen.jp/about/membership",
+    "https://boysandmen.jp/about/account",
+    "https://boysandmen.jp/about/law",
+    "https://boysandmen.jp/help",
+    "https://boysandmen.jp/about/payment",
+    "https://boysandmen.jp/about/customer_harassment",
+}
+
+# 予定ではないリンク名
+SKIP_TITLES = [
+    "F.ENT IDについて",
+    "お客さまへのお願い",
+    "お支払いについて",
+    "よくあるご質問",
+    "よくある質問",
+    "ボイメン☆ファミリーとは",
+    "特商法に基づく表示",
+    "お問い合わせ",
+    "お問合せ",
+    "会社概要",
+    "プライバシーポリシー",
+    "利用規約",
+    "サイトマップ",
+    "ログイン",
+    "ログアウト",
+    "会員登録",
+    "ファンクラブ",
+    "Powered by",
+    "前月へ",
+    "次月へ",
+    "パワープレイソングに決定",
+    "HOME",
+    "トップページ",
+    "SCHEDULE",
+    "NEWS",
+]
+
+
+def normalize(text):
+    return " ".join((text or "").replace("\xa0", " ").split())
+
+
+def get_soup(url):
+    response = SESSION.get(url, timeout=TIMEOUT)
+    response.raise_for_status()
+    response.encoding = (
+        response.apparent_encoding or response.encoding
+    )
+    return BeautifulSoup(response.text, "html.parser")
+
+
+def parse_full_date(text):
+    """年・月・日が明記された日付だけを認識する。"""
+    text = normalize(text)
+
+    pattern = (
+        r"(20\d{2})\s*[年/.\-]\s*"
+        r"(\d{1,2})\s*[月/.\-]\s*"
+        r"(\d{1,2})\s*日?"
+    )
+
+    match = re.search(pattern, text)
+
+    if not match:
+        return None
+
+    try:
+        return date(
+            int(match.group(1)),
+            int(match.group(2)),
+            int(match.group(3)),
+        )
+    except ValueError:
+        return None
+
+
+def member_for(title, detail_text=""):
+    """タイトルを優先し、ページ全体からメンバーを誤判定しない。"""
+    title = normalize(title)
+
+    matches = [m for m in MEMBERS if m in title]
+
+    if len(matches) == 1:
+        return matches[0]
+
+    if len(matches) > 1:
+        return "その他"
+
+    # 個別イベントの詳細ページに限り、本文も確認する。
+    matches = [
+        m for m in MEMBERS
+        if m in normalize(detail_text)
+    ]
+
+    if len(matches) == 1:
+        return matches[0]
+
+    return "グループ全体"
+
+
+def classify(text):
+    text = normalize(text)
+
+    if any(x in text for x in [
+        "特典会", "お渡し会", "サイン会", "リミスタ"
+    ]):
+        return "特典会"
+
+    if any(x in text for x in ["ラジオ", "RADIO", "FM "]):
+        return "ラジオ"
+
+    if any(x in text for x in [
+        "テレビ", "TV出演", "NHK", "東海テレビ", "TBS"
+    ]):
+        return "テレビ"
+
+    if any(x in text for x in ["舞台", "ミュージカル"]):
+        return "舞台"
+
+    if any(x in text for x in [
+        "ライブ", "コンサート", "単独公演"
+    ]):
+        return "ライブ"
+
+    if any(x in text for x in ["配信", "YouTube"]):
+        return "配信"
+
+    if any(x in text for x in ["リリース", "発売記念"]):
+        return "リリース"
+
+    return "イベント"
+
+
+def is_skipped_title(title):
+    title = normalize(title)
+
+    if not title or len(title) < 4:
+        return True
+
+    if title.startswith("▼"):
+        return True
+
+    return any(
+        word.casefold() in title.casefold()
+        for word in SKIP_TITLES
+    )
+
+
+def is_excluded_boys_url(url):
+    parsed = urlparse(url)
+
+    if parsed.netloc.lower() not in {
+        "boysandmen.jp",
+        "www.boysandmen.jp",
+    }:
+        return True
+
+    path = parsed.path.rstrip("/") or "/"
+
+    # カレンダー自体へのリンクはイベントではない
+    if path == "/vertical_calendar":
+        return True
+
+    if path.startswith("/vertical_calendar/"):
+        return True
+
+    # サイト共通の案内・アカウントページを除外
+    for prefix in EXCLUDED_PATHS:
+        if path == prefix or path.startswith(prefix + "/"):
+            return True
+
+    return False
+
+
 def make_event(source, event_date, title, url, detail_text=""):
     title = normalize(title)
 
