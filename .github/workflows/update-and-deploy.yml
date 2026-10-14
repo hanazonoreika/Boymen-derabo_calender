@@ -39,73 +39,62 @@ jobs:
       - name: Diagnose Dera schedule page
         run: |
           python - <<'PY'
+          import re
           import requests
-          from bs4 import BeautifulSoup
-          from urllib.parse import urljoin, urlparse
+          from urllib.parse import urljoin
 
-          urls = [
-              "https://dxboys.bitfan.id/",
-              "https://dxboys.bitfan.id/schedules/menu/184780",
+          base = "https://dxboys.bitfan.id"
+          page = requests.get(
+              base + "/schedules/menu/184780",
+              headers={"User-Agent": "Mozilla/5.0"},
+              timeout=25,
+          )
+          page.raise_for_status()
+
+          from bs4 import BeautifulSoup
+          soup = BeautifulSoup(page.text, "html.parser")
+
+          scripts = [
+              urljoin(base, s.get("src", ""))
+              for s in soup.select("script[src]")
+              if "schedule_calender" in s.get("src", "")
           ]
 
-          for url in urls:
-              print("\n===== CHECK:", url, "=====")
+          print("SCHEDULE_SCRIPTS:", scripts)
 
+          patterns = re.compile(
+              r"schedules|calendar|calender|api/|graphql|"
+              r"axios|fetch\(|\.json|pagination|per_page|page_size",
+              re.I,
+          )
+
+          for url in scripts:
+              print("\n===== SCRIPT:", url, "=====")
               try:
                   r = requests.get(
                       url,
-                      headers={
-                          "User-Agent": "Mozilla/5.0",
-                          "Accept-Language": "ja,en-US;q=0.8,en;q=0.6",
-                      },
+                      headers={"User-Agent": "Mozilla/5.0"},
                       timeout=25,
                   )
-
                   print("STATUS:", r.status_code)
-                  print("FINAL_URL:", r.url)
-                  print("HTML_LENGTH:", len(r.text))
+                  print("LENGTH:", len(r.text))
 
-                  soup = BeautifulSoup(r.text, "html.parser")
+                  matches = list(patterns.finditer(r.text))
+                  print("MATCH_COUNT:", len(matches))
 
-                  links = []
-                  for a in soup.select("a[href]"):
-                      href = urljoin(url, a.get("href", ""))
-                      parsed = urlparse(href)
+                  shown = set()
+                  for match in matches:
+                      start = max(0, match.start() - 100)
+                      end = min(len(r.text), match.end() + 180)
+                      snippet = r.text[start:end].replace("\n", " ")
 
-                      if (
-                          parsed.netloc.lower() == "dxboys.bitfan.id"
-                          and parsed.path.startswith("/schedules/")
-                          and "/menu/" not in parsed.path
-                      ):
-                          title = a.get_text(" ", strip=True)
-                          links.append((title, href))
+                      if snippet in shown:
+                          continue
+                      shown.add(snippet)
+                      print("MATCH:", snippet[:300])
 
-                  unique_links = list(dict.fromkeys(links))
-
-                  print("DETAIL_LINK_COUNT:", len(unique_links))
-                  print("DETAIL_LINK_SAMPLES:")
-                  for title, href in unique_links[:30]:
-                      print(" ", repr(title), "=>", href)
-
-                  print("SCRIPT_URLS:")
-                  for s in soup.select("script[src]"):
-                      print(" ", urljoin(url, s.get("src", "")))
-
-                  print("PAGINATION_LINKS:")
-                  for a in soup.select("a[href]"):
-                      title = a.get_text(" ", strip=True)
-                      href = a.get("href", "")
-                      combined = (title + " " + href).lower()
-
-                      if any(x in combined for x in [
-                          "next", "page=", "pagination",
-                          "次へ", "次のページ", "もっと見る"
-                      ]):
-                          print(" ", repr(title), "=>", href)
-
-                  text = soup.get_text(" ", strip=True)
-                  print("HAS_SCHEDULE_WORD:", "SCHEDULE" in text.upper())
-                  print("HAS_MORE_WORD:", "もっと見る" in text)
+                      if len(shown) >= 30:
+                          break
 
               except Exception as e:
                   print("ERROR:", type(e).__name__, str(e))
