@@ -264,83 +264,108 @@ def scrape_boys():
 
 def collect_derabo_schedule_links(soup, page_url):
     links = []
+
     for anchor in soup.select("a[href]"):
         title = normalize(anchor.get_text(" ", strip=True))
         href = urldefrag(urljoin(page_url, anchor.get("href", "")))[0]
-        if not title or len(title) < 4 or not href.startswith(DERA_BASE):
+        parsed = urlparse(href)
+
+        if parsed.netloc.lower() != "dxboys.bitfan.id":
             continue
-        path = urlparse(href).path
-        if not path.startswith("/schedules/") or "/menu/" in path:
+
+        # 個別スケジュールページだけを対象にする
+        match = re.match(r"^/schedules/(\d+)/?$", parsed.path)
+        if not match:
             continue
-        if should_skip_title(title):
+
+        if not title or len(title) < 4 or should_skip_title(title):
             continue
-        links.append((title, href))
-    return list(dict.fromkeys(links))
 
-def get_schedule_detail_date(soup, title):
-    # タイトルに明示された日付を優先
-    event_date = parse_full_date(title)
-    if event_date:
-        return event_date
+        links.append((title, f"{DERA_BASE}/schedules/{match.group(1)}"))
 
-    # BitfanのSCHEDULE詳細欄に記載された日付を取得
-    text = soup.get_text("\n", strip=True)
-    lines = [normalize(line) for line in text.splitlines()]
-    lines = [line for line in lines if line]
+    # URLで重複を除外
+    unique = {}
+    for title, href in links:
+        unique[href] = title
 
-    for i, line in enumerate(lines):
-        if line.upper() == "SCHEDULE":
-            # SCHEDULE見出しの直後にある日付を確認
-            for candidate in lines[i + 1:i + 5]:
-                event_date = parse_full_date(candidate)
-                if event_date:
-                    return event_date
+    return [(title, href) for href, title in unique.items()]
 
-    # 日付が確定できなければ誤登録を避けるため登録しない
-    return None
 
 def scrape_derabo():
     events = []
     errors = []
-    try:
-        soup = get_soup(DERA_SCHEDULE)
-    except Exception as exc:
-        return [], {
-            "ok": False, "count": 0,
-            "error": f"{type(exc).__name__}: {exc}",
-            "url": DERA_SCHEDULE,
-        }
+    pages_checked = 0
+    links_by_url = {}
 
-    links = collect_derabo_schedule_links(soup, DERA_SCHEDULE)
-    checked = 0
-    for link_title, detail_url in links[:150]:
+    # 予定一覧ページに加えて、公式トップページからも探す
+    for list_url in [DERA_SCHEDULE, DERA_BASE + "/"]:
+        try:
+            soup = get_soup(list_url)
+            found = collect_derabo_schedule_links(soup, list_url)
+
+            for title, href in found:
+                links_by_url[href] = title
+
+        except Exception as exc:
+            errors.append(
+                f"{list_url}: {type(exc).__name__}: {exc}"
+            )
+
+    # 個別ページを取得し、開催日を確認
+    for detail_url, link_title in list(links_by_url.items())[:150]:
         try:
             detail = get_soup(detail_url)
-            checked += 1
+            pages_checked += 1
+
             heading = detail.select_one("h1")
-            title = normalize(heading.get_text(" ", strip=True)) if heading else link_title
+            title = (
+                normalize(heading.get_text(" ", strip=True))
+                if heading else link_title
+            )
+
             if not title:
                 title = link_title
+
             event_date = get_schedule_detail_date(detail, title)
+
+            if not event_date:
+                # 個別ページの表示テキストからも日付を探す
+                text = detail.get_text("\n", strip=True)
+                event_date = parse_full_date(text)
+
             if not event_date:
                 continue
+
             body = normalize(detail.get_text(" ", strip=True))
-            item = make_event("dera", event_date, title, detail_url, body)
+            item = make_event(
+                "dera", event_date, title, detail_url, body
+            )
+
             if item:
                 events.append(item)
+
         except Exception as exc:
-            errors.append(f"{detail_url}: {type(exc).__name__}: {exc}")
+            errors.append(
+                f"{detail_url}: {type(exc).__name__}: {exc}"
+            )
 
     unique = {}
     for item in events:
-        unique[(item["date"], item["title"].casefold(), item["url"])] = item
+        key = (
+            item["date"],
+            item["title"].casefold(),
+            item["url"],
+        )
+        unique[key] = item
+
     return list(unique.values()), {
-        "ok": True,
+        "ok": bool(links_by_url) and pages_checked > 0,
         "count": len(unique),
-        "detail_links_found": len(links),
-        "detail_pages_checked": checked,
+        "detail_links_found": len(links_by_url),
+        "detail_pages_checked": pages_checked,
         "errors": errors[:8],
         "url": DERA_SCHEDULE,
+        "list_pages_checked": [DERA_SCHEDULE, DERA_BASE + "/"],
     }
 
 def main():
