@@ -36,154 +36,114 @@ jobs:
       - name: Fetch official schedules
         run: python scrape.py
 
-      - name: Diagnose Dera schedule page
+      - name: Diagnose Dera calendar API
         run: |
           python - <<'PY'
           import re
           import requests
           from bs4 import BeautifulSoup
+          from urllib.parse import urljoin
 
-          urls = [
-              "https://dxboys.bitfan.id/",
-              "https://dxboys.bitfan.id/schedules/menu/184780",
-          ]
+          page_url = "https://dxboys.bitfan.id/schedules/menu/184780"
 
           headers = {
               "User-Agent": "Mozilla/5.0"
           }
 
-          for url in urls:
-              print("\n" + "=" * 70)
-              print("PAGE:", url)
+          response = requests.get(
+              page_url,
+              headers=headers,
+              timeout=30,
+          )
 
-              try:
-                  response = requests.get(
-                      url,
-                      headers=headers,
-                      timeout=30,
-                  )
-                  print("STATUS:", response.status_code)
-                  print("HTML_LENGTH:", len(response.text))
+          print("PAGE_STATUS:", response.status_code)
 
-                  soup = BeautifulSoup(
-                      response.text,
-                      "html.parser",
-                  )
+          soup = BeautifulSoup(
+              response.text,
+              "html.parser",
+          )
 
-                  links = []
-                  for a in soup.select("a[href]"):
-                      href = a.get("href", "")
-                      if "schedules" in href.lower():
-                          links.append({
-                              "title": a.get_text(" ", strip=True),
-                              "href": href,
-                          })
+          calendar = soup.select_one("#js-schedule-calender")
 
-                  print("SCHEDULE_LINK_COUNT:", len(links))
-                  for item in links[:30]:
-                      print("LINK:", item)
+          if calendar:
+              print(
+                  "CALENDAR_SUBDOMAIN:",
+                  calendar.get("data-subdomain"),
+              )
+              print(
+                  "CALENDAR_ELEMENT:",
+                  str(calendar)[:1000],
+              )
+          else:
+              print("CALENDAR_ELEMENT_NOT_FOUND")
 
-                  scripts = [
-                      s.get("src")
-                      for s in soup.select("script[src]")
-                  ]
+          for item in soup.select('meta[name="jwt-token"]'):
+              print(
+                  "JWT_META_FOUND:",
+                  bool(item.get("content")),
+              )
 
-                  print("SCRIPT_COUNT:", len(scripts))
+          for item in soup.select('[name="jwt-token"]'):
+              print(
+                  "JWT_INPUT_FOUND:",
+                  bool(item.get("value")),
+              )
 
-                  for script_url in scripts:
-                      if not script_url:
-                          continue
+          scripts = [
+              item.get("src")
+              for item in soup.select("script[src]")
+              if item.get("src")
+          ]
 
-                      if not any(
-                          word in script_url.lower()
-                          for word in (
-                              "schedule",
-                              "calendar",
-                              "app",
-                          )
-                      ):
-                          continue
+          for script in scripts:
+              if "schedule_calender-" not in script:
+                  continue
 
-                      full_url = requests.compat.urljoin(
-                          url,
-                          script_url,
+              script_url = urljoin(page_url, script)
+
+              print("SCRIPT_URL:", script_url)
+
+              js_response = requests.get(
+                  script_url,
+                  headers=headers,
+                  timeout=30,
+              )
+
+              print(
+                  "SCRIPT_STATUS:",
+                  js_response.status_code,
+              )
+
+              js = js_response.text
+
+              for pattern in (
+                  r'baseURL\s*=\s*[^;]{1,300}',
+                  r'function\s+\w+\s*\([^)]*\)\s*\{[^}]{0,200}baseURL',
+                  r'get\s*\("/fanclubs/',
+                  r'jwt-token',
+                  r'js-schedule-calender',
+              ):
+                  matches = list(
+                      re.finditer(
+                          pattern,
+                          js,
+                          re.IGNORECASE,
                       )
+                  )
 
-                      try:
-                          js_response = requests.get(
-                              full_url,
-                              headers=headers,
-                              timeout=30,
-                          )
+                  for match in matches[:5]:
+                      start = max(0, match.start() - 250)
+                      end = min(len(js), match.end() + 400)
 
-                          print("\nSCRIPT_URL:", full_url)
-                          print(
-                              "SCRIPT_STATUS:",
-                              js_response.status_code,
-                          )
-                          print(
-                              "SCRIPT_LENGTH:",
-                              len(js_response.text),
-                          )
+                      print(
+                          "\nAPI_DETAIL:",
+                          pattern,
+                      )
+                      print(js[start:end])
 
-                          js = js_response.text
+              break
 
-                          patterns = [
-                              r"/api/",
-                              r"schedules",
-                              r"schedule",
-                              r"axios",
-                              r"fetch\s*\(",
-                              r"XMLHttpRequest",
-                              r"\.ajax\s*\(",
-                              r"\.json",
-                          ]
-
-                          seen = set()
-                          count = 0
-
-                          for pattern in patterns:
-                              for match in re.finditer(
-                                  pattern,
-                                  js,
-                                  re.IGNORECASE,
-                              ):
-                                  start = max(
-                                      0,
-                                      match.start() - 180,
-                                  )
-                                  end = min(
-                                      len(js),
-                                      match.end() + 300,
-                                  )
-
-                                  snippet = js[start:end]
-
-                                  if snippet in seen:
-                                      continue
-
-                                  seen.add(snippet)
-                                  print(
-                                      "\nJS_MATCH:",
-                                      pattern,
-                                  )
-                                  print(snippet[:500])
-
-                                  count += 1
-                                  if count >= 25:
-                                      break
-
-                              if count >= 25:
-                                  break
-
-                          print("JS_MATCH_COUNT:", count)
-
-                      except Exception as e:
-                          print("SCRIPT_ERROR:", repr(e))
-
-              except Exception as e:
-                  print("PAGE_ERROR:", repr(e))
-
+          print("\nDIAGNOSTIC_FINISHED")
           PY
 
       - name: Configure GitHub Pages
