@@ -20,8 +20,6 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,14 +35,13 @@ jobs:
       - name: Fetch official schedules
         run: python scrape.py
 
-      - name: Save updated event data
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/events.json
-          git diff --cached --quiet || git commit -m "Update official event data"
-          git pull --rebase origin main
-          git push
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload site with fresh data
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
 
   deploy:
     needs: update
@@ -53,19 +50,6 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Checkout updated files
-        uses: actions/checkout@v4
-        with:
-          ref: main
-
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload site
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: .
-
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@v4
