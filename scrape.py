@@ -78,7 +78,7 @@ def main():
             events.extend(items)
         except Exception as e:
             report[src["label"]]={"ok":False,"count":0,"error":str(e),"url":src["url"]}
-            print("WARN",src["label],repr(e),file=sys.stderr)
+            print("WARN", src["label"], repr(e), file=sys.stderr)
     # De-duplicate overlapping calendar/news links while retaining the first source entry.
     unique={}
     for e in events:
