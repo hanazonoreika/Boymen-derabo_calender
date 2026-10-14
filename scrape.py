@@ -261,7 +261,31 @@ def scrape_boys():
         "errors": errors[:8],
         "url": BOYS_CALENDAR,
     }
+def get_schedule_detail_date(soup, title):
+    # タイトルに日付が含まれていれば優先
+    event_date = parse_full_date(title)
+    if event_date:
+        return event_date
 
+    # 個別ページのSCHEDULE欄から開催日を探す
+    text = soup.get_text("\n", strip=True)
+    lines = [normalize(line) for line in text.splitlines()]
+    lines = [line for line in lines if line]
+
+    for i, line in enumerate(lines):
+        if line.upper() == "SCHEDULE":
+            for candidate in lines[i + 1:i + 8]:
+                event_date = parse_full_date(candidate)
+                if event_date:
+                    return event_date
+
+    # ページ内の明示的な日付を探す
+    for line in lines:
+        event_date = parse_full_date(line)
+        if event_date:
+            return event_date
+
+    return None
 def collect_derabo_schedule_links(soup, page_url):
     links = {}
 
