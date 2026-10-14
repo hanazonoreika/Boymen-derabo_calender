@@ -263,32 +263,40 @@ def scrape_boys():
     }
 
 def collect_derabo_schedule_links(soup, page_url):
-    links = []
+    links = {}
 
     for anchor in soup.select("a[href]"):
-        title = normalize(anchor.get_text(" ", strip=True))
-        href = urldefrag(urljoin(page_url, anchor.get("href", "")))[0]
+        href = urldefrag(
+            urljoin(page_url, anchor.get("href", ""))
+        )[0]
         parsed = urlparse(href)
 
-        if parsed.netloc.lower() != "dxboys.bitfan.id":
+        if parsed.netloc.lower() not in {
+            "dxboys.bitfan.id",
+            "www.dxboys.bitfan.id",
+        }:
             continue
 
-        # 個別スケジュールページだけを対象にする
+        # /schedules/数字 の個別ページだけを取得
         match = re.match(r"^/schedules/(\d+)/?$", parsed.path)
         if not match:
             continue
 
-        if not title or len(title) < 4 or should_skip_title(title):
-            continue
+        # クエリ文字列を除いたURLに統一
+        detail_url = f"{DERA_BASE}/schedules/{match.group(1)}"
 
-        links.append((title, f"{DERA_BASE}/schedules/{match.group(1)}"))
+        # リンク文字が空でも捨てない
+        title = normalize(anchor.get_text(" ", strip=True))
+        if title and should_skip_title(title):
+            title = ""
 
-    # URLで重複を除外
-    unique = {}
-    for title, href in links:
-        unique[href] = title
+        # 同じURLが複数あれば、文字があるタイトルを優先
+        if detail_url not in links or (
+            title and not links[detail_url]
+        ):
+            links[detail_url] = title
 
-    return [(title, href) for href, title in unique.items()]
+    return [(title, href) for href, title in links.items()]
 
 
 def scrape_derabo():
